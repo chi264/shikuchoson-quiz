@@ -329,7 +329,13 @@ function nextQuestion(render = true) {
   } else if (active.mode === "prefecture") {
     pool = master;
   }
-  if (!pool.length) return;
+  const solved = new Set(active.correctCodes);
+  pool = pool.filter((row) => !solved.has(row.code));
+  if (!pool.length) {
+    active.question = null;
+    if (render) saveAndRender();
+    return;
+  }
   active.question = pool[Math.floor(Math.random() * pool.length)];
   if (render) saveAndRender();
 }
@@ -451,7 +457,7 @@ function renderPlay() {
       </div>
 
       <div class="stats-grid">
-        <div class="stat-card"><div class="stat-label">${remaining === null ? "経過" : "残り"}</div><div class="stat-value">${timeLabel}</div><div class="stat-sub">${active ? "プレイ中" : "待機中"}</div></div>
+        <div class="stat-card"><div class="stat-label">${remaining === null ? "経過" : "残り"}</div><div class="stat-value" id="timeValue">${timeLabel}</div><div class="stat-sub">${active ? "プレイ中" : "待機中"}</div></div>
         <div class="stat-card"><div class="stat-label">正解</div><div class="stat-value">${correct}/${total}</div><div class="stat-sub">${pct.toFixed(1)}%</div></div>
         <div class="stat-card"><div class="stat-label">連続</div><div class="stat-value">${active?.streak || 0}</div><div class="stat-sub">最大 ${active?.maxStreak || 0}</div></div>
       </div>
@@ -487,11 +493,14 @@ function renderQuestionOrInput(active) {
     question = `<div class="question-card"><div class="question-label">都道府県を答える</div><div class="question-main">${escapeHtml(active.question.ctv_kanji)}</div></div>`;
     placeholder = "例: 北海道";
   }
+  if ((active.mode === "reading" || active.mode === "prefecture") && !active.question) {
+    question = `<div class="result ok">このモードの全問を正解しました。終了して保存できます。</div>`;
+  }
   return `
     ${question}
     <form class="answer-form" id="answerForm">
-      <input id="answerInput" class="text-input" autocomplete="off" enterkeyhint="send" placeholder="${placeholder}" />
-      <button class="btn primary" type="submit">送信</button>
+      <input id="answerInput" class="text-input" autocomplete="off" enterkeyhint="send" placeholder="${placeholder}" ${(active.mode === "reading" || active.mode === "prefecture") && !active.question ? "disabled" : ""} />
+      <button class="btn primary" type="submit" ${(active.mode === "reading" || active.mode === "prefecture") && !active.question ? "disabled" : ""}>送信</button>
     </form>
     <div class="toolbar">
       <button class="btn ghost" data-action="showHint">ヒント</button>
@@ -732,7 +741,13 @@ function checkTimer() {
     finishGame(true);
     return;
   }
-  if (state.active) render();
+  if (state.active) {
+    const timeValue = document.querySelector("#timeValue");
+    if (timeValue) {
+      const remaining = activeRemaining();
+      timeValue.textContent = remaining === null ? formatTime(elapsed(state.active)) : formatTime(remaining);
+    }
+  }
 }
 
 async function init() {
