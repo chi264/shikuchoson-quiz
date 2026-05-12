@@ -21,7 +21,7 @@ const MODES = {
   weak: "復習"
 };
 
-const APP_VERSION = "v0.3.0";
+const APP_VERSION = "v0.3.1";
 const STORE_KEY = "municipality-quiz-pwa-state-v1";
 const $app = document.querySelector("#app");
 
@@ -763,7 +763,9 @@ async function init() {
   render();
   timer = setInterval(checkTimer, 1000);
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./service-worker.js").catch(() => {});
+    navigator.serviceWorker.register("./service-worker.js?v=0.3.1").then((registration) => {
+      registration.update().catch(() => {});
+    }).catch(() => {});
   }
 }
 

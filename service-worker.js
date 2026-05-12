@@ -1,10 +1,10 @@
-const CACHE_NAME = "municipality-quiz-v4";
+const CACHE_NAME = "municipality-quiz-v5";
 const ASSETS = [
   "./",
   "./index.html",
-  "./styles.css",
-  "./app.js",
-  "./manifest.webmanifest",
+  "./styles.css?v=0.3.1",
+  "./app.js?v=0.3.1",
+  "./manifest.webmanifest?v=0.3.1",
   "./data/municipalities.json",
   "./icons/icon.svg",
   "./icons/icon-192.png",
@@ -25,16 +25,31 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
+async function networkFirst(request) {
+  const cache = await caches.open(CACHE_NAME);
+  try {
+    const response = await fetch(request, { cache: "no-store" });
+    if (response.ok) await cache.put(request, response.clone());
+    return response;
+  } catch {
+    return caches.match(request);
+  }
+}
+
+async function cacheFirst(request) {
+  const cached = await caches.match(request);
+  if (cached) return cached;
+  const response = await fetch(request);
+  if (response.ok) {
+    const cache = await caches.open(CACHE_NAME);
+    await cache.put(request, response.clone());
+  }
+  return response;
+}
+
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request).then((response) => {
-        const copy = response.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-        return response;
-      });
-    })
-  );
+  const url = new URL(event.request.url);
+  const isAppShell = event.request.mode === "navigate" || /\.(html|js|css|webmanifest)$/.test(url.pathname);
+  event.respondWith(isAppShell ? networkFirst(event.request) : cacheFirst(event.request));
 });
