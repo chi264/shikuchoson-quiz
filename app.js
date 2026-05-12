@@ -21,6 +21,7 @@ const MODES = {
   weak: "復習"
 };
 
+const APP_VERSION = "v0.3.0";
 const STORE_KEY = "municipality-quiz-pwa-state-v1";
 const $app = document.querySelector("#app");
 
@@ -465,7 +466,7 @@ function renderPlay() {
       <div class="answer-zone">
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
         <div class="actions">
-          ${active ? `<button class="btn primary" data-action="finish">終了して保存</button><button class="btn danger" data-action="reset">リセット</button>` : `<button class="btn primary" data-action="start" ${canStart ? "" : "disabled"}>ゲーム開始</button><button class="btn ghost" data-action="hint" ${active ? "" : "disabled"}>ヒント</button>`}
+          ${active ? `<button class="btn primary wide" data-action="finish">終了して保存</button>` : `<button class="btn primary" data-action="start" ${canStart ? "" : "disabled"}>ゲーム開始</button><button class="btn ghost" data-action="hint" ${active ? "" : "disabled"}>ヒント</button>`}
         </div>
         ${renderQuestionOrInput(active)}
         ${renderLastResult(active)}
@@ -505,6 +506,7 @@ function renderQuestionOrInput(active) {
     <div class="toolbar">
       <button class="btn ghost" data-action="showHint">ヒント</button>
       ${active.mode === "reading" || active.mode === "prefecture" ? `<button class="btn ghost" data-action="nextQuestion">次の問題</button>` : ""}
+      <button class="btn danger" data-action="reset">保存せずリセット</button>
     </div>
   `;
 }
@@ -642,7 +644,7 @@ function render() {
       <header class="topbar">
         <div class="brand">
           <img src="./icons/icon.svg" alt="" />
-          <div><div class="brand-title">市町村クイズ</div><div class="brand-sub">${master.length.toLocaleString()}件の自治体データ</div></div>
+          <div><div class="brand-title">市町村クイズ</div><div class="brand-sub">${APP_VERSION} / ${master.length.toLocaleString()}件の自治体データ</div></div>
         </div>
         <button class="install-pill ${deferredInstallPrompt ? "show" : ""}" data-action="install">保存</button>
       </header>
@@ -697,7 +699,7 @@ function handleAction(event) {
   const action = event.currentTarget.dataset.action;
   if (action === "start") startGame();
   if (action === "finish") finishGame(false);
-  if (action === "reset") resetGame();
+  if (action === "reset" && confirm("今回のプレイを保存せずにリセットしますか？")) resetGame();
   if (action === "showHint") {
     state.showHints = !state.showHints;
     saveAndRender();
