@@ -235,6 +235,16 @@ select:disabled {
   box-shadow: 0 6px 18px rgba(28, 52, 47, 0.12);
 }
 
+.segmented.compact {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 10px;
+}
+
+.segmented.compact button {
+  min-height: 38px;
+  font-size: 0.82rem;
+}
+
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -475,6 +485,28 @@ select:disabled {
   flex: 1 1 130px;
 }
 
+.link-btn {
+  display: grid;
+  place-items: center;
+  text-decoration: none;
+}
+
+.memo-input {
+  min-height: 92px;
+  padding: 10px 12px;
+  resize: vertical;
+}
+
+.wiki-summary {
+  padding: 10px 12px;
+  border-left: 4px solid var(--brand);
+  border-radius: 8px;
+  background: #ecfdf5;
+  color: #14532d;
+  font-size: 0.84rem;
+  line-height: 1.6;
+}
+
 .empty {
   padding: 24px 12px;
   color: var(--muted);
@@ -491,7 +523,7 @@ select:disabled {
   grid-template-columns: repeat(4, 1fr);
   gap: 4px;
   padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
-  width: 100%;
+  width: auto;
   max-width: 100vw;
   background: rgba(255, 255, 255, 0.94);
   border-top: 1px solid var(--line);
@@ -499,6 +531,7 @@ select:disabled {
 }
 
 .nav-btn {
+  min-width: 0;
   min-height: 48px;
   border-radius: 13px;
   background: transparent;

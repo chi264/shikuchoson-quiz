@@ -1,10 +1,10 @@
-const CACHE_NAME = "municipality-quiz-v5";
+const CACHE_NAME = "municipality-quiz-v6";
 const ASSETS = [
   "./",
   "./index.html",
-  "./styles.css?v=0.3.1",
-  "./app.js?v=0.3.1",
-  "./manifest.webmanifest?v=0.3.1",
+  "./styles.css?v=0.4.0",
+  "./app.js?v=0.4.0",
+  "./manifest.webmanifest?v=0.4.0",
   "./data/municipalities.json",
   "./icons/icon.svg",
   "./icons/icon-192.png",

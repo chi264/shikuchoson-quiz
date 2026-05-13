@@ -17,11 +17,30 @@ const MODES = {
   normal: "通常",
   time: "時間",
   reading: "読み",
-  prefecture: "都道府県",
+  prefecture: "県当て",
   weak: "復習"
 };
 
-const APP_VERSION = "v0.3.1";
+const AREA_GROUPS = [
+  { key: "all", label: "全国", prefs: PREF_ORDER },
+  { key: "hokkaido", label: "北海道", prefs: ["北海道"] },
+  { key: "north-tohoku", label: "北東北", prefs: ["青森県", "岩手県", "秋田県"] },
+  { key: "south-tohoku", label: "南東北", prefs: ["宮城県", "山形県", "福島県"] },
+  { key: "north-kanto", label: "北関東", prefs: ["茨城県", "栃木県", "群馬県", "埼玉県"] },
+  { key: "south-kanto", label: "南関東", prefs: ["千葉県", "神奈川県", "山梨県"] },
+  { key: "tokyo", label: "東京", prefs: ["東京都"] },
+  { key: "hokushinetsu", label: "北信越", prefs: ["新潟県", "長野県", "富山県", "石川県", "福井県"] },
+  { key: "tokai", label: "東海", prefs: ["静岡県", "岐阜県", "愛知県", "三重県"] },
+  { key: "north-kinki", label: "北近畿", prefs: ["滋賀県", "京都府", "大阪府", "兵庫県"] },
+  { key: "south-kinki", label: "南近畿", prefs: ["三重県", "奈良県", "和歌山県"] },
+  { key: "chugoku", label: "中国", prefs: ["岡山県", "広島県", "鳥取県", "島根県", "山口県"] },
+  { key: "shikoku", label: "四国", prefs: ["香川県", "愛媛県", "徳島県", "高知県"] },
+  { key: "north-kyushu", label: "北部九州", prefs: ["福岡県", "佐賀県", "長崎県"] },
+  { key: "central-south-kyushu", label: "中南部九州", prefs: ["熊本県", "大分県", "宮崎県"] },
+  { key: "south-kyushu-okinawa", label: "南九沖縄", prefs: ["鹿児島県", "沖縄県"] }
+];
+
+const APP_VERSION = "v0.4.0";
 const STORE_KEY = "municipality-quiz-pwa-state-v1";
 const $app = document.querySelector("#app");
 
@@ -37,11 +56,15 @@ function loadState() {
   const fallback = {
     tab: "play",
     pref: "北海道",
+    scope: "pref:北海道",
     mode: "normal",
-    timeLimit: 180,
+    timeLimit: 600,
     active: null,
     sessions: [],
     reviewPref: "すべて",
+    recordsMode: "all",
+    notes: {},
+    wikiSummaries: {},
     recordsScope: "all",
     lastSavedAt: null
   };
@@ -98,8 +121,29 @@ function enrich(row) {
   return item;
 }
 
-function buildPrefIndex(pref) {
-  if (indexCache.has(pref)) return indexCache.get(pref);
+function getScope(scopeKey = state.scope) {
+  if (scopeKey?.startsWith("pref:")) {
+    const pref = scopeKey.slice(5);
+    return { key: scopeKey, label: pref, prefs: [pref], type: "pref" };
+  }
+  const group = AREA_GROUPS.find((area) => `area:${area.key}` === scopeKey || area.key === scopeKey);
+  if (group) return { ...group, key: `area:${group.key}`, type: group.key === "all" ? "all" : "area" };
+  return { key: "pref:北海道", label: "北海道", prefs: ["北海道"], type: "pref" };
+}
+
+function scopeRows(scopeKey = state.scope) {
+  const scope = getScope(scopeKey);
+  if (scope.type === "all") return master;
+  const targetPrefs = new Set(scope.prefs);
+  return master.filter((row) => targetPrefs.has(row.pref_kanji));
+}
+
+function scopeLabel(scopeKey = state.scope) {
+  return getScope(scopeKey).label;
+}
+
+function buildScopeIndex(scopeKey) {
+  if (indexCache.has(scopeKey)) return indexCache.get(scopeKey);
   const idx = new Map();
   const add = (type, key, code) => {
     if (!key) return;
@@ -107,7 +151,7 @@ function buildPrefIndex(pref) {
     if (!idx.has(k)) idx.set(k, new Set());
     idx.get(k).add(code);
   };
-  master.filter((row) => row.pref_kanji === pref).forEach((row) => {
+  scopeRows(scopeKey).forEach((row) => {
     add("kanji_full", row.ctv_kanji, row.code);
     add("kanji_base", row.ctv_kanji_base, row.code);
     add("kanji_full", row.ctv_omi_kanji, row.code);
@@ -117,7 +161,7 @@ function buildPrefIndex(pref) {
     add("kana_full", row.ctv_omi_kana_hira_full, row.code);
     add("kana_base", row.ctv_omi_kana_hira_base, row.code);
   });
-  indexCache.set(pref, idx);
+  indexCache.set(scopeKey, idx);
   return idx;
 }
 
@@ -125,10 +169,10 @@ function getCodes(idx, type, key) {
   return new Set(idx.get(`${type}:${key}`) || []);
 }
 
-function judgeCity(pref, value) {
+function judgeCity(scopeKey, value) {
   const raw = nfkc(value);
   if (!raw) return { ok: false, codes: new Set(), reason: "empty" };
-  const idx = buildPrefIndex(pref);
+  const idx = buildScopeIndex(scopeKey);
   const hira = normalizeInput(raw);
   const hiraBase = stripAdminSuffixHira(hira);
   const checks = [
@@ -188,17 +232,18 @@ function computeScore(session) {
 }
 
 function getCurrentTotal() {
-  if (state.mode === "prefecture") return master.length;
-  if (state.mode === "weak") return weakRowsForPref(state.pref).length || prefTotals[state.pref] || 0;
-  return prefTotals[state.pref] || 0;
+  if (state.mode === "weak") return weakRowsForScope(state.scope).length || scopeRows(state.scope).length;
+  return scopeRows(state.scope).length;
 }
 
 function startGame() {
-  const pref = state.mode === "prefecture" ? "全国" : state.pref;
+  const scope = getScope(state.scope);
   state.active = {
     id: uid(),
     mode: state.mode,
-    pref,
+    pref: scope.label,
+    scopeKey: scope.key,
+    scopeLabel: scope.label,
     startIso: nowIso(),
     startMs: Date.now(),
     limitSec: state.timeLimit,
@@ -282,12 +327,12 @@ function submitAnswer(event) {
   const active = state.active;
 
   if (active.mode === "normal" || active.mode === "time" || active.mode === "weak") {
-    const result = judgeCity(state.pref, input);
+    const result = judgeCity(active.scopeKey || state.scope, input);
     let ok = result.ok;
     let codes = Array.from(result.codes);
     let reason = result.reason;
     if (active.mode === "weak" && ok) {
-      const weakCodes = new Set(weakRowsForPref(state.pref).map((row) => row.code));
+      const weakCodes = new Set(weakRowsForScope(active.scopeKey || state.scope).map((row) => row.code));
       codes = codes.filter((code) => weakCodes.has(code));
       ok = codes.length > 0;
       reason = ok ? "復習対象に一致" : "正解済みのため対象外";
@@ -326,9 +371,9 @@ function nextQuestion(render = true) {
   const active = state.active;
   let pool = [];
   if (active.mode === "reading") {
-    pool = master.filter((row) => row.pref_kanji === state.pref);
+    pool = scopeRows(active.scopeKey || state.scope);
   } else if (active.mode === "prefecture") {
-    pool = master;
+    pool = scopeRows(active.scopeKey || state.scope);
   }
   const solved = new Set(active.correctCodes);
   pool = pool.filter((row) => !solved.has(row.code));
@@ -341,22 +386,15 @@ function nextQuestion(render = true) {
   if (render) saveAndRender();
 }
 
-function hintList() {
-  if (!state.active) return [];
-  const solved = new Set(state.active.correctCodes);
-  let pool = master.filter((row) => row.pref_kanji === state.pref && !solved.has(row.code));
-  if (state.active.mode === "weak") {
-    const weak = new Set(weakRowsForPref(state.pref).map((row) => row.code));
-    pool = pool.filter((row) => weak.has(row.code));
-  }
-  return pool.sort(() => Math.random() - 0.5).slice(0, 12).map((row) => `${row.ctv_kana_hira_full[0] || row.ctv_kanji[0]}...（${row.ctv_kanji[0]}）`);
-}
-
 function achievementByPref() {
   const solved = new Map();
   state.sessions.forEach((session) => {
-    if (!solved.has(session.pref)) solved.set(session.pref, new Set());
-    session.correctCodes.forEach((code) => solved.get(session.pref).add(code));
+    session.correctCodes.forEach((code) => {
+      const row = master.find((item) => item.code === code);
+      if (!row) return;
+      if (!solved.has(row.pref_kanji)) solved.set(row.pref_kanji, new Set());
+      solved.get(row.pref_kanji).add(code);
+    });
   });
   return prefs.map((pref) => {
     const count = solved.get(pref)?.size || 0;
@@ -365,25 +403,33 @@ function achievementByPref() {
   });
 }
 
-function weakRowsForPref(pref) {
+function solvedCodesGlobal() {
   const solved = new Set();
-  state.sessions.filter((session) => session.pref === pref).forEach((session) => {
+  state.sessions.forEach((session) => {
     session.correctCodes.forEach((code) => solved.add(code));
   });
-  return master.filter((row) => row.pref_kanji === pref && !solved.has(row.code));
+  return solved;
+}
+
+function weakRowsForScope(scopeKey) {
+  const solved = solvedCodesGlobal();
+  return scopeRows(scopeKey).filter((row) => !solved.has(row.code));
 }
 
 function allWeakRows() {
-  const played = new Set(state.sessions.map((session) => session.pref).filter((pref) => pref !== "全国"));
-  return Array.from(played).flatMap((pref) => weakRowsForPref(pref));
+  const solved = solvedCodesGlobal();
+  return master.filter((row) => !solved.has(row.code));
 }
 
 function topMissedRows(limit = 30) {
   const sessionsByPref = new Map();
   state.sessions.forEach((session) => {
-    if (session.pref === "全国") return;
-    if (!sessionsByPref.has(session.pref)) sessionsByPref.set(session.pref, []);
-    sessionsByPref.get(session.pref).push(session);
+    const scope = getScope(session.scopeKey || (session.pref && `pref:${session.pref}`));
+    scope.prefs.forEach((pref) => {
+      if (!prefs.includes(pref)) return;
+      if (!sessionsByPref.has(pref)) sessionsByPref.set(pref, []);
+      sessionsByPref.get(pref).push(session);
+    });
   });
   const rows = [];
   sessionsByPref.forEach((sessions, pref) => {
@@ -399,6 +445,15 @@ function topMissedRows(limit = 30) {
     });
   });
   return rows.sort((a, b) => b.rate - a.rate || b.miss - a.miss || a.ctv_kanji.localeCompare(b.ctv_kanji, "ja")).slice(0, limit);
+}
+
+function wikipediaUrl(row) {
+  const query = `${row.pref_kanji} ${row.ctv_kanji}`;
+  return `https://ja.wikipedia.org/w/index.php?search=${encodeURIComponent(query)}`;
+}
+
+function wikiSummary(row) {
+  return state.wikiSummaries?.[row.code] || "";
 }
 
 function escapeHtml(value) {
@@ -417,8 +472,18 @@ function modeOptions() {
   `).join("");
 }
 
-function prefOptions(selected = state.pref) {
-  return prefs.map((pref) => `<option value="${pref}" ${pref === selected ? "selected" : ""}>${pref}</option>`).join("");
+function scopeOptions(selected = state.scope) {
+  const areaOptions = AREA_GROUPS
+    .filter((area) => area.key === "all" || area.prefs.some((pref) => prefs.includes(pref)))
+    .map((area) => {
+      const value = `area:${area.key}`;
+      return `<option value="${value}" ${value === selected ? "selected" : ""}>${area.label}</option>`;
+    }).join("");
+  const prefOptionHtml = prefs.map((pref) => {
+    const value = `pref:${pref}`;
+    return `<option value="${value}" ${value === selected ? "selected" : ""}>${pref}</option>`;
+  }).join("");
+  return `<optgroup label="地方・全国">${areaOptions}</optgroup><optgroup label="都道府県">${prefOptionHtml}</optgroup>`;
 }
 
 function renderPlay() {
@@ -429,19 +494,20 @@ function renderPlay() {
   const pct = total ? Math.min(100, (correct / total) * 100) : 0;
   const remaining = activeRemaining();
   const timeLabel = active ? (remaining === null ? formatTime(elapsed(active)) : formatTime(remaining)) : "00:00";
-  const canStart = !(state.mode === "weak" && weakRowsForPref(state.pref).length === 0);
+  const canStart = !(state.mode === "weak" && weakRowsForScope(state.scope).length === 0);
+  const currentScopeLabel = active?.scopeLabel || scopeLabel(state.scope);
   return `
     <section class="hero-panel">
       <div class="hero-head">
         <div class="hero-kicker">${escapeHtml(MODES[mode])}モード</div>
-        <h1 class="hero-title">${escapeHtml(active?.pref === "全国" ? "全国" : state.pref)} 市町村クイズ</h1>
+        <h1 class="hero-title">${escapeHtml(currentScopeLabel)} 市町村クイズ</h1>
         <p class="hero-copy">${active ? "進捗と履歴は端末に保存されます。" : "漢字・かな・カナ・省略OK。"}</p>
       </div>
 
       <div class="hero-controls">
         <label>
-          <span class="field-label">都道府県</span>
-          <select class="select" id="prefSelect" ${active ? "disabled" : ""}>${prefOptions()}</select>
+          <span class="field-label">範囲</span>
+          <select class="select" id="scopeSelect" ${active ? "disabled" : ""}>${scopeOptions()}</select>
         </label>
         <div>
           <span class="field-label">モード</span>
@@ -451,7 +517,7 @@ function renderPlay() {
           <label>
             <span class="field-label">制限時間</span>
             <select class="select" id="limitSelect">
-              ${[60, 90, 120, 180, 300].map((sec) => `<option value="${sec}" ${state.timeLimit === sec ? "selected" : ""}>${formatTime(sec)}</option>`).join("")}
+              ${[180, 600, 900, 1800].map((sec) => `<option value="${sec}" ${state.timeLimit === sec ? "selected" : ""}>${formatTime(sec)}</option>`).join("")}
             </select>
           </label>
         ` : ""}
@@ -466,7 +532,7 @@ function renderPlay() {
       <div class="answer-zone">
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
         <div class="actions">
-          ${active ? `<button class="btn primary wide" data-action="finish">終了して保存</button>` : `<button class="btn primary" data-action="start" ${canStart ? "" : "disabled"}>ゲーム開始</button><button class="btn ghost" data-action="hint" ${active ? "" : "disabled"}>ヒント</button>`}
+          ${active ? `<button class="btn primary wide" data-action="finish">終了して保存</button>` : `<button class="btn primary wide" data-action="start" ${canStart ? "" : "disabled"}>ゲーム開始</button>`}
         </div>
         ${renderQuestionOrInput(active)}
         ${renderLastResult(active)}
@@ -479,8 +545,8 @@ function renderPlay() {
 
 function renderQuestionOrInput(active) {
   if (!active) {
-    if (state.mode === "weak" && weakRowsForPref(state.pref).length === 0) {
-      return `<div class="result warn">この都道府県には復習対象がまだありません。</div>`;
+    if (state.mode === "weak" && weakRowsForScope(state.scope).length === 0) {
+      return `<div class="result warn">この範囲には復習対象がまだありません。</div>`;
     }
     return `<input class="text-input" disabled value="ゲーム開始後に入力できます" />`;
   }
@@ -504,7 +570,6 @@ function renderQuestionOrInput(active) {
       <button class="btn primary" type="submit" ${(active.mode === "reading" || active.mode === "prefecture") && !active.question ? "disabled" : ""}>送信</button>
     </form>
     <div class="toolbar">
-      <button class="btn ghost" data-action="showHint">ヒント</button>
       ${active.mode === "reading" || active.mode === "prefecture" ? `<button class="btn ghost" data-action="nextQuestion">次の問題</button>` : ""}
       <button class="btn danger" data-action="reset">保存せずリセット</button>
     </div>
@@ -522,12 +587,11 @@ function renderLastResult(active) {
 
 function renderSolvedPanel(active) {
   if (!active) return "";
-  const rows = rowsByCodes(active.correctCodes).filter((row) => active.pref === "全国" || row.pref_kanji === state.pref);
-  const hints = state.showHints ? hintList() : [];
+  const scopeCodes = new Set(scopeRows(active.scopeKey || state.scope).map((row) => row.code));
+  const rows = rowsByCodes(active.correctCodes).filter((row) => scopeCodes.has(row.code));
   return `
     <section class="panel">
       <h2 class="panel-title">正解済み <span>${rows.length}</span></h2>
-      ${hints.length ? `<div class="chips">${hints.map((h) => `<span class="chip">${escapeHtml(h)}</span>`).join("")}</div>` : ""}
       ${rows.length ? `<div class="chips">${rows.slice(0, 80).map((row) => `<span class="chip">${escapeHtml(row.ctv_kanji)}</span>`).join("")}</div>` : `<div class="empty">まだ正解がありません。</div>`}
     </section>
   `;
@@ -555,14 +619,25 @@ function renderRecords() {
   const played = ach.filter((row) => row.count > 0).length;
   const cleared = ach.filter((row) => row.rate >= 1).length;
   const avg = ach.reduce((sum, row) => sum + row.rate, 0) / Math.max(ach.length, 1);
-  const sessions = [...state.sessions].sort((a, b) => b.score - a.score || new Date(b.endIso) - new Date(a.endIso));
+  const modeEntries = [["all", "全て"], ...Object.entries(MODES)];
+  const sessions = [...state.sessions]
+    .filter((session) => state.recordsMode === "all" || session.mode === state.recordsMode)
+    .sort((a, b) => b.score - a.score || new Date(b.endIso) - new Date(a.endIso));
+  const pointsByMode = Object.fromEntries(Object.keys(MODES).map((mode) => [
+    mode,
+    state.sessions.filter((session) => session.mode === mode).reduce((sum, session) => sum + (session.score || 0), 0)
+  ]));
+  const totalPoints = state.sessions.reduce((sum, session) => sum + (session.score || 0), 0);
   return `
     <section class="panel">
-      <h2 class="panel-title">全国クリア率</h2>
+      <h2 class="panel-title">ポイント</h2>
       <div class="stats-grid">
+        <div class="stat-card"><div class="stat-label">合計</div><div class="stat-value">${totalPoints.toLocaleString()}</div><div class="stat-sub">pt</div></div>
         <div class="stat-card"><div class="stat-label">プレイ済み</div><div class="stat-value">${played}/47</div></div>
         <div class="stat-card"><div class="stat-label">完全制覇</div><div class="stat-value">${cleared}</div></div>
-        <div class="stat-card"><div class="stat-label">平均</div><div class="stat-value">${(avg * 100).toFixed(1)}%</div></div>
+      </div>
+      <div class="chips" style="margin-top:10px">
+        ${Object.entries(MODES).map(([mode, label]) => `<span class="chip">${label}: ${Math.round(pointsByMode[mode] || 0).toLocaleString()}pt</span>`).join("")}
       </div>
     </section>
     <section class="panel">
@@ -578,7 +653,10 @@ function renderRecords() {
       </div>
     </section>
     <section class="panel">
-      <h2 class="panel-title">スコアランキング</h2>
+      <h2 class="panel-title">種別ごとの記録</h2>
+      <div class="segmented compact">
+        ${modeEntries.map(([mode, label]) => `<button type="button" class="${state.recordsMode === mode ? "active" : ""}" data-records-mode="${mode}">${label}</button>`).join("")}
+      </div>
       ${sessions.length ? `<div class="list">${sessions.slice(0, 30).map((s, i) => `
         <div class="row-card">
           <div class="row-main">${i + 1}. ${escapeHtml(MODES[s.mode])} / ${escapeHtml(s.pref)} / ${s.score.toLocaleString()}点</div>
@@ -590,15 +668,34 @@ function renderRecords() {
 }
 
 function renderReview() {
-  const weak = state.reviewPref === "すべて" ? allWeakRows() : weakRowsForPref(state.reviewPref);
+  const weak = state.reviewPref === "すべて" ? allWeakRows() : weakRowsForScope(`pref:${state.reviewPref}`);
   const missed = topMissedRows();
-  const reviewPrefs = ["すべて", ...prefs.filter((pref) => state.sessions.some((s) => s.pref === pref))];
+  const playedPrefs = new Set();
+  state.sessions.forEach((session) => {
+    (session.correctCodes || []).forEach((code) => {
+      const row = master.find((item) => item.code === code);
+      if (row) playedPrefs.add(row.pref_kanji);
+    });
+  });
+  const reviewPrefs = ["すべて", ...prefs.filter((pref) => playedPrefs.has(pref))];
   return `
     <section class="panel">
       <h2 class="panel-title">苦手リスト <span>${weak.length}</span></h2>
       <select class="select" id="reviewPref">${reviewPrefs.map((pref) => `<option value="${pref}" ${state.reviewPref === pref ? "selected" : ""}>${pref}</option>`).join("")}</select>
       ${weak.length ? `<div class="list" style="margin-top:10px">${weak.slice(0, 80).map((row) => `
-        <div class="row-card"><div class="row-main">${escapeHtml(row.ctv_kanji)}</div><div class="row-sub">${escapeHtml(row.pref_kanji)} / ${escapeHtml(row.ctv_kana)}</div></div>
+        <div class="row-card review-card">
+          <div class="row-main">${escapeHtml(row.ctv_kanji)}</div>
+          <div class="row-sub">${escapeHtml(row.pref_kanji)} / ${escapeHtml(row.ctv_kana)}</div>
+          <div class="toolbar">
+            <a class="btn ghost link-btn" href="${wikipediaUrl(row)}" target="_blank" rel="noopener">Wikipedia</a>
+            <button class="btn ghost" data-action="wikiSummary" data-code="${row.code}">概要取得</button>
+          </div>
+          ${wikiSummary(row) ? `<div class="wiki-summary">${escapeHtml(wikiSummary(row))}</div>` : ""}
+          <label>
+            <span class="field-label">メモ</span>
+            <textarea class="text-input memo-input" data-note-code="${row.code}" rows="3" placeholder="覚え方、行ったこと、関連情報など">${escapeHtml(state.notes?.[row.code] || "")}</textarea>
+          </label>
+        </div>
       `).join("")}</div>` : `<div class="empty">復習対象はまだありません。</div>`}
     </section>
     <section class="panel">
@@ -614,7 +711,13 @@ function renderReview() {
 }
 
 function renderSettings() {
-  const payload = encodeURIComponent(JSON.stringify({ version: 1, exportedAt: nowIso(), sessions: state.sessions }));
+  const payload = encodeURIComponent(JSON.stringify({
+    version: 2,
+    exportedAt: nowIso(),
+    sessions: state.sessions,
+    notes: state.notes || {},
+    wikiSummaries: state.wikiSummaries || {}
+  }));
   return `
     <section class="panel">
       <h2 class="panel-title">データ管理</h2>
@@ -678,8 +781,15 @@ function bindEvents() {
       saveAndRender();
     });
   });
-  document.querySelector("#prefSelect")?.addEventListener("change", (event) => {
-    state.pref = event.target.value;
+  document.querySelectorAll("[data-records-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.recordsMode = button.dataset.recordsMode;
+      saveAndRender();
+    });
+  });
+  document.querySelector("#scopeSelect")?.addEventListener("change", (event) => {
+    state.scope = event.target.value;
+    if (state.scope.startsWith("pref:")) state.pref = state.scope.slice(5);
     saveAndRender();
   });
   document.querySelector("#limitSelect")?.addEventListener("change", (event) => {
@@ -692,19 +802,23 @@ function bindEvents() {
     state.reviewPref = event.target.value;
     saveAndRender();
   });
+  document.querySelectorAll("[data-note-code]").forEach((input) => {
+    input.addEventListener("change", () => {
+      state.notes = state.notes || {};
+      state.notes[input.dataset.noteCode] = input.value;
+      saveState();
+    });
+  });
   document.querySelector("#importFile")?.addEventListener("change", importHistory);
 }
 
-function handleAction(event) {
+async function handleAction(event) {
   const action = event.currentTarget.dataset.action;
   if (action === "start") startGame();
   if (action === "finish") finishGame(false);
   if (action === "reset" && confirm("今回のプレイを保存せずにリセットしますか？")) resetGame();
-  if (action === "showHint") {
-    state.showHints = !state.showHints;
-    saveAndRender();
-  }
   if (action === "nextQuestion") nextQuestion(true);
+  if (action === "wikiSummary") await fetchWikiSummary(event.currentTarget.dataset.code);
   if (action === "clearHistory" && confirm("保存済み履歴を削除しますか？")) {
     state.sessions = [];
     saveAndRender();
@@ -716,6 +830,25 @@ function handleAction(event) {
   }
 }
 
+async function fetchWikiSummary(code) {
+  const row = master.find((item) => item.code === code);
+  if (!row) return;
+  const buttonText = document.querySelector(`[data-action="wikiSummary"][data-code="${CSS.escape(code)}"]`);
+  if (buttonText) buttonText.textContent = "取得中";
+  try {
+    const title = encodeURIComponent(row.ctv_kanji);
+    const response = await fetch(`https://ja.wikipedia.org/api/rest_v1/page/summary/${title}`);
+    if (!response.ok) throw new Error("not found");
+    const data = await response.json();
+    state.wikiSummaries = state.wikiSummaries || {};
+    state.wikiSummaries[code] = data.extract || "概要を取得できませんでした。";
+  } catch {
+    state.wikiSummaries = state.wikiSummaries || {};
+    state.wikiSummaries[code] = "概要を取得できませんでした。Wikipediaリンクから確認してください。";
+  }
+  saveAndRender();
+}
+
 function importHistory(event) {
   const file = event.target.files?.[0];
   if (!file) return;
@@ -725,6 +858,8 @@ function importHistory(event) {
       const parsed = JSON.parse(String(reader.result || "{}"));
       if (!Array.isArray(parsed.sessions)) throw new Error("bad format");
       state.sessions = parsed.sessions;
+      state.notes = parsed.notes || state.notes || {};
+      state.wikiSummaries = parsed.wikiSummaries || state.wikiSummaries || {};
       saveAndRender();
     } catch {
       alert("履歴ファイルを読み込めませんでした。");
@@ -760,10 +895,19 @@ async function init() {
   prefs = PREF_ORDER.filter((pref) => prefSet.has(pref)).concat([...prefSet].filter((pref) => !PREF_ORDER.includes(pref)).sort());
   prefTotals = Object.fromEntries(prefs.map((pref) => [pref, new Set(master.filter((row) => row.pref_kanji === pref).map((row) => row.code)).size]));
   if (!prefs.includes(state.pref)) state.pref = prefs[0] || "北海道";
+  if (!state.scope) state.scope = `pref:${state.pref}`;
+  const validScopes = new Set([
+    ...AREA_GROUPS.map((area) => `area:${area.key}`),
+    ...prefs.map((pref) => `pref:${pref}`)
+  ]);
+  if (!validScopes.has(state.scope)) state.scope = `pref:${state.pref}`;
+  state.notes = state.notes || {};
+  state.wikiSummaries = state.wikiSummaries || {};
+  state.recordsMode = state.recordsMode || "all";
   render();
   timer = setInterval(checkTimer, 1000);
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./service-worker.js?v=0.3.1").then((registration) => {
+    navigator.serviceWorker.register("./service-worker.js?v=0.4.0").then((registration) => {
       registration.update().catch(() => {});
     }).catch(() => {});
   }
