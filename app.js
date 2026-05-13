@@ -17,7 +17,7 @@ const MODES = {
   normal: "通常",
   time: "時間",
   reading: "読み",
-  prefecture: "県当て",
+  prefecture: "都道府県当て",
   weak: "復習"
 };
 
@@ -40,7 +40,7 @@ const AREA_GROUPS = [
   { key: "south-kyushu-okinawa", label: "南九沖縄", prefs: ["鹿児島県", "沖縄県"] }
 ];
 
-const APP_VERSION = "v0.4.0";
+const APP_VERSION = "v0.4.1";
 const STORE_KEY = "municipality-quiz-pwa-state-v1";
 const $app = document.querySelector("#app");
 
@@ -65,6 +65,8 @@ function loadState() {
     recordsMode: "all",
     notes: {},
     wikiSummaries: {},
+    lastCompleted: null,
+    selectedPrefStats: null,
     recordsScope: "all",
     lastSavedAt: null
   };
@@ -231,6 +233,54 @@ function computeScore(session) {
   return Math.round(progress * 80000 + speedBonus + inputAccuracy * 5000);
 }
 
+function bestComparableScore(mode, scopeKey, excludeId = null) {
+  const comparable = state.sessions.filter((session) =>
+    session.id !== excludeId && session.mode === mode && (session.scopeKey || "") === (scopeKey || "")
+  );
+  return comparable.reduce((best, session) => Math.max(best, session.score || 0), 0);
+}
+
+function prefectureStats(pref) {
+  const prefRows = master.filter((row) => row.pref_kanji === pref);
+  const prefCodes = new Set(prefRows.map((row) => row.code));
+  const sessions = state.sessions.filter((session) =>
+    (session.correctCodes || []).some((code) => prefCodes.has(code))
+  );
+  const solved = new Set();
+  sessions.forEach((session) => {
+    (session.correctCodes || []).forEach((code) => {
+      if (prefCodes.has(code)) solved.add(code);
+    });
+  });
+  const bestScore = sessions.reduce((best, session) => Math.max(best, session.score || 0), 0);
+  const wrongInputs = sessions.reduce((sum, session) => sum + (session.log || []).filter((row) => row.result === "ng").length, 0);
+  const totalInputs = sessions.reduce((sum, session) => sum + (session.totalInputs || 0), 0);
+  return {
+    pref,
+    sessions: sessions.length,
+    solved: solved.size,
+    total: prefRows.length,
+    rate: prefRows.length ? solved.size / prefRows.length : 0,
+    bestScore,
+    wrongInputs,
+    totalInputs
+  };
+}
+
+function weakStats(row) {
+  const sessions = state.sessions.filter((session) =>
+    (session.scopeKey && scopeRows(session.scopeKey).some((item) => item.code === row.code)) ||
+    (session.correctCodes || []).includes(row.code) ||
+    session.pref === row.pref_kanji
+  );
+  const solvedSessions = sessions.filter((session) => (session.correctCodes || []).includes(row.code)).length;
+  return {
+    played: sessions.length,
+    solved: solvedSessions,
+    missed: Math.max(0, sessions.length - solvedSessions)
+  };
+}
+
 function getCurrentTotal() {
   if (state.mode === "weak") return weakRowsForScope(state.scope).length || scopeRows(state.scope).length;
   return scopeRows(state.scope).length;
@@ -282,6 +332,7 @@ function finishGame(auto = false) {
   };
   session.score = computeScore(session);
   state.sessions.unshift(session);
+  state.lastCompleted = session;
   state.lastSavedAt = nowIso();
   state.active = null;
   saveAndRender();
@@ -538,8 +589,27 @@ function renderPlay() {
         ${renderLastResult(active)}
       </div>
     </section>
+    ${renderLastCompleted()}
     ${renderSolvedPanel(active)}
     ${renderLogPanel(active)}
+  `;
+}
+
+function renderLastCompleted() {
+  const session = state.lastCompleted;
+  if (!session || state.active) return "";
+  const previousBest = bestComparableScore(session.mode, session.scopeKey, session.id);
+  const isBest = previousBest <= session.score;
+  const speed = session.durationSec ? (session.uniqueCorrect / session.durationSec) * 60 : 0;
+  return `
+    <section class="panel score-result">
+      <h2 class="panel-title">前回スコア <span>${isBest ? "自己ベスト" : ""}</span></h2>
+      <div class="stats-grid">
+        <div class="stat-card"><div class="stat-label">ポイント</div><div class="stat-value">${(session.score || 0).toLocaleString()}</div><div class="stat-sub">pt</div></div>
+        <div class="stat-card"><div class="stat-label">正答数</div><div class="stat-value">${session.uniqueCorrect}/${session.total}</div></div>
+        <div class="stat-card"><div class="stat-label">速さ</div><div class="stat-value">${speed.toFixed(1)}</div><div class="stat-sub">問/分</div></div>
+      </div>
+    </section>
   `;
 }
 
@@ -628,6 +698,7 @@ function renderRecords() {
     state.sessions.filter((session) => session.mode === mode).reduce((sum, session) => sum + (session.score || 0), 0)
   ]));
   const totalPoints = state.sessions.reduce((sum, session) => sum + (session.score || 0), 0);
+  const selectedStats = state.selectedPrefStats ? prefectureStats(state.selectedPrefStats) : null;
   return `
     <section class="panel">
       <h2 class="panel-title">ポイント</h2>
@@ -644,14 +715,24 @@ function renderRecords() {
       <h2 class="panel-title">都道府県別</h2>
       <div class="dashboard-grid">
         ${ach.map((row) => `
-          <div class="pref-tile ${row.rate >= 1 ? "full" : ""}">
+          <button class="pref-tile ${row.rate >= 1 ? "full" : ""}" data-pref-stats="${row.pref}">
             <div class="pref-name"><span>${row.pref}</span><span>${Math.round(row.rate * 100)}%</span></div>
             <div class="pref-detail">${row.count}/${row.total}</div>
             <div class="progress-track"><div class="progress-fill" style="width:${row.rate * 100}%"></div></div>
-          </div>
+          </button>
         `).join("")}
       </div>
     </section>
+    ${selectedStats ? `
+      <section class="panel">
+        <h2 class="panel-title">${escapeHtml(selectedStats.pref)} の記録</h2>
+        <div class="stats-grid">
+          <div class="stat-card"><div class="stat-label">達成率</div><div class="stat-value">${Math.round(selectedStats.rate * 100)}%</div><div class="stat-sub">${selectedStats.solved}/${selectedStats.total}</div></div>
+          <div class="stat-card"><div class="stat-label">最高</div><div class="stat-value">${selectedStats.bestScore.toLocaleString()}</div><div class="stat-sub">pt</div></div>
+          <div class="stat-card"><div class="stat-label">不正解</div><div class="stat-value">${selectedStats.wrongInputs}</div><div class="stat-sub">${selectedStats.totalInputs}入力中</div></div>
+        </div>
+      </section>
+    ` : ""}
     <section class="panel">
       <h2 class="panel-title">種別ごとの記録</h2>
       <div class="segmented compact">
@@ -686,6 +767,10 @@ function renderReview() {
         <div class="row-card review-card">
           <div class="row-main">${escapeHtml(row.ctv_kanji)}</div>
           <div class="row-sub">${escapeHtml(row.pref_kanji)} / ${escapeHtml(row.ctv_kana)}</div>
+          ${(() => {
+            const stats = weakStats(row);
+            return `<div class="chips"><span class="chip">未正解 ${stats.missed}回</span><span class="chip">対象プレイ ${stats.played}回</span></div>`;
+          })()}
           <div class="toolbar">
             <a class="btn ghost link-btn" href="${wikipediaUrl(row)}" target="_blank" rel="noopener">Wikipedia</a>
             <button class="btn ghost" data-action="wikiSummary" data-code="${row.code}">概要取得</button>
@@ -784,6 +869,12 @@ function bindEvents() {
   document.querySelectorAll("[data-records-mode]").forEach((button) => {
     button.addEventListener("click", () => {
       state.recordsMode = button.dataset.recordsMode;
+      saveAndRender();
+    });
+  });
+  document.querySelectorAll("[data-pref-stats]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.selectedPrefStats = button.dataset.prefStats;
       saveAndRender();
     });
   });
@@ -907,7 +998,7 @@ async function init() {
   render();
   timer = setInterval(checkTimer, 1000);
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./service-worker.js?v=0.4.0").then((registration) => {
+    navigator.serviceWorker.register("./service-worker.js?v=0.4.1").then((registration) => {
       registration.update().catch(() => {});
     }).catch(() => {});
   }
